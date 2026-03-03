@@ -23,6 +23,10 @@ with st.sidebar:
     col_total_work = st.text_input("総労働時間の列名", value="総労働")
     col_break_time = st.text_input("休憩時間の列名", value="休憩時間")
     col_name = st.text_input("名前の列名", value="名前")
+    col_clockin = st.text_input("出勤の列名", value="出勤")
+    col_clockout = st.text_input("退勤の列名", value="退勤")
+    col_break_start = st.text_input("休憩開始の列名", value="休憩開始")
+    col_break_end = st.text_input("休憩終了の列名", value="休憩終了")
 
 
 def normalize_name(name):
@@ -63,6 +67,14 @@ def time_to_minutes(t):
             return int(float(t) * 60)
         except ValueError:
             return 0
+
+
+def is_empty(val):
+    if pd.isna(val):
+        return True
+    if str(val).strip() == "":
+        return True
+    return False
 
 
 def is_minor(birthday, check_date=None):
@@ -130,7 +142,7 @@ def load_employee_data(excel_file):
     return employees
 
 
-def check_labor(df, col_work, col_break, col_nm, employee_data):
+def check_labor(df, col_work, col_break, col_nm, employee_data, col_ci, col_co, col_bs, col_be):
     warnings = []
     warn_types = []
     minor_flags = []
@@ -142,6 +154,19 @@ def check_labor(df, col_work, col_break, col_nm, employee_data):
         name_val = normalize_name(row.get(col_nm, ""))
         emp = employee_data.get(name_val, None)
         minor = emp["is_minor"] if emp else None
+        has_clockin = not is_empty(row.get(col_ci, None)) if col_ci in df.columns else False
+        has_clockout = not is_empty(row.get(col_co, None)) if col_co in df.columns else False
+        has_break_start = not is_empty(row.get(col_bs, None)) if col_bs in df.columns else False
+        has_break_end = not is_empty(row.get(col_be, None)) if col_be in df.columns else False
+        if has_clockin and not has_clockout:
+            msgs.append("🔵 退勤の打刻がありません")
+            types.append("no_clockout")
+        if has_break_start and not has_break_end:
+            msgs.append("🟣 休憩終了の打刻がありません")
+            types.append("no_break_end")
+        if not has_break_start and has_break_end:
+            msgs.append("🟣 休憩開始の打刻がありません")
+            types.append("no_break_start")
         if work_min > 360 and break_min < 30:
             msgs.append("⚠️ 休憩時間が30分以上確保されていません")
             types.append("break_short")
@@ -186,6 +211,8 @@ def create_report_excel(problem_df, col_work, col_break, col_nm):
         dark_red_fill = PatternFill(start_color="FF9999", end_color="FF9999", fill_type="solid")
         yellow_fill = PatternFill(start_color="FFFFCC", end_color="FFFFCC", fill_type="solid")
         orange_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+        blue_fill = PatternFill(start_color="CCE5FF", end_color="CCE5FF", fill_type="solid")
+        purple_fill = PatternFill(start_color="E8CCF5", end_color="E8CCF5", fill_type="solid")
         header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         header_font = Font(color="FFFFFF", bold=True, size=11)
         thin_border = Border(
@@ -211,6 +238,10 @@ def create_report_excel(problem_df, col_work, col_break, col_nm):
                 fill = dark_red_fill
             elif "🔴" in check_str:
                 fill = red_fill
+            elif "🔵" in check_str:
+                fill = blue_fill
+            elif "🟣" in check_str:
+                fill = purple_fill
             elif "🟡" in check_str:
                 fill = yellow_fill
             elif "⚠️" in check_str:
@@ -230,8 +261,6 @@ def create_report_excel(problem_df, col_work, col_break, col_nm):
                 if val:
                     max_len = max(max_len, len(str(val)))
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = min(max_len + 4, 50)
-        today_str = datetime.now().strftime("%Y年%m月%d日")
-        ws.sheet_properties.tabColor = "FF0000"
     output.seek(0)
     return output
 
@@ -283,12 +312,11 @@ if uploaded_files:
         sample_df = list(all_dataframes.values())[0]
         has_work_col = col_total_work in sample_df.columns
         has_break_col = col_break_time in sample_df.columns
-        has_name_col = col_name in sample_df.columns
         if not has_work_col or not has_break_col:
             st.warning(f"⚠️ CSVに該当する列名が見つかりません。左サイドバーの列名の設定を確認してください。CSVの列名一覧: {', '.join(sample_df.columns.tolist())}")
         else:
             for store_name, df in all_dataframes.items():
-                all_dataframes[store_name] = check_labor(df, col_total_work, col_break_time, col_name, employee_data)
+                all_dataframes[store_name] = check_labor(df, col_total_work, col_break_time, col_name, employee_data, col_clockin, col_clockout, col_break_start, col_break_end)
             st.divider()
             st.subheader("🚨 労務チェック結果")
             all_checked = pd.concat(all_dataframes.values(), ignore_index=True)
@@ -309,10 +337,14 @@ if uploaded_files:
                     total = row.get(col_total_work, "")
                     brk = row.get(col_break_time, "")
                     minor_flag = row.get("年少者判定", "")
+                    clockin_val = row.get(col_clockin, "")
+                    clockout_val = row.get(col_clockout, "")
                     if "minor_over8h" in warn_types:
                         bg_color = "#ff9999"
                     elif "🔴" in str(check_msg):
                         bg_color = "#ffcccc"
+                    elif "no_clockout" in warn_types or "no_break_start" in warn_types or "no_break_end" in warn_types:
+                        bg_color = "#cce5ff"
                     elif "over8h_unknown" in warn_types:
                         bg_color = "#ffffcc"
                     elif "⚠️" in str(check_msg):
@@ -327,7 +359,8 @@ if uploaded_files:
                     with st.container():
                         c1, c2 = st.columns([4, 1])
                         with c1:
-                            st.markdown(f'<div style="background-color:{bg_color};padding:10px;border-radius:5px;margin-bottom:5px"><b>{store} / {name} / {date_val}</b>{minor_badge}<br>総労働: {total}　休憩: {brk}<br>{check_msg}</div>', unsafe_allow_html=True)
+                            detail = f"総労働: {total}　休憩: {brk}　出勤: {clockin_val}　退勤: {clockout_val}"
+                            st.markdown(f'<div style="background-color:{bg_color};padding:10px;border-radius:5px;margin-bottom:5px"><b>{store} / {name} / {date_val}</b>{minor_badge}<br>{detail}<br>{check_msg}</div>', unsafe_allow_html=True)
                         with c2:
                             if "over8h_unknown" in warn_types:
                                 if "break_short" not in warn_types and "break_lack" not in warn_types:
@@ -390,4 +423,5 @@ if uploaded_files:
 else:
     st.info("👆 勤怠CSVファイルをドラッグ＆ドロップしてください")
 st.divider()
-st.caption("勤怠データ統合ツール v5.0 — 労務チェック結果ダウンロード機能付き")
+st.caption("勤怠データ統合ツール v6.0 — 打刻チェック機能追加")
+
